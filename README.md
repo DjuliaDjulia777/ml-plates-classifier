@@ -1,5 +1,11 @@
 ﻿# ML Plates Classifier
 
+![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
+![PyTorch](https://img.shields.io/badge/PyTorch-2.14-ee4c2c)
+![Poetry](https://img.shields.io/badge/managed%20by-poetry-60a5fa)
+![Tests](https://img.shields.io/badge/tests-11%20passed-brightgreen)
+![Code style](https://img.shields.io/badge/code%20style-black-000000)
+
 Binary image classification of clean and dirty plates using transfer learning (ResNet-18).
 
 ## Task
@@ -22,7 +28,7 @@ Given photos of plates, predict whether each plate is `cleaned` or `dirty`.
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.11 or 3.12
 - Poetry
 
 ## Install
@@ -53,6 +59,12 @@ The best checkpoint is saved to `models/best_model.pth`.
 
     poetry run pytest
 
+## Code quality
+
+    poetry run pre-commit run --all-files
+
+Runs black, isort, flake8, mypy and pre-commit-hooks.
+
 ## Virtual environment
 
-The project uses Poetry. The virtual environment itself is not committed to Git (see .gitignore). Reproducibility is provided by pyproject.toml and poetry.lock. Anyone can recreate the exact environment with `poetry install`.
+The project uses Poetry. The virtual environment itself is not committed to Git (see `.gitignore`). Reproducibility is provided by `pyproject.toml` and `poetry.lock`. Anyone can recreate the exact environment with `poetry install`.
