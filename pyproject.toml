@@ -1,0 +1,36 @@
+[project]
+name = "ml-plates-classifier"
+version = "0.1.0"
+description = "ML plates classifier"
+authors = [
+    {name = "Yulia Morozova",email = "kadastr.kadastr@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "numpy (<2.4)",
+    "torch (>=2.14.1,<3.0.0)",
+    "torchvision (>=0.29.1,<0.30.0)",
+    "matplotlib (>=3.11.2,<4.0.0)",
+    "pandas (>=3.0.6,<4.0.0)",
+    "tqdm (>=4.70.1,<5.0.0)",
+    "pillow (>=12.3.0,<13.0.0)",
+    "pyyaml (>=6.0.3,<7.0.0)"
+]
+
+[tool.poetry]
+packages = [{include = "plates", from = "src"}]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "pytest (>=9.1.1,<10.0.0)",
+    "black (>=26.5.1,<27.0.0)",
+    "isort (>=9.0.2,<10.0.0)",
+    "flake8 (>=7.4.1,<8.0.0)",
+    "mypy (>=2.4.0,<3.0.0)",
+    "pre-commit (>=4.6.2,<5.0.0)"
+]
