@@ -34,3 +34,8 @@ Thumbs.db
 
 # Env
 .env
+
+# Extra outputs
+predictions_detailed.csv
+*.pth
+.ipynb_checkpoints/

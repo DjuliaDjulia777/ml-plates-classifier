@@ -2,9 +2,12 @@ data:
   train_dir: data/raw/plates/train
   test_dir: data/raw/plates/test
   val_split: 0.2
+  image_size: 224
 
 model:
   num_classes: 2
+  freeze_backbone: true
+  pretrained: true
 
 training:
   batch_size: 8
@@ -12,6 +15,9 @@ training:
   learning_rate: 0.001
   num_workers: 2
   seed: 42
+
+inference:
+  confidence_threshold: 0.95
 
 paths:
   models_dir: models

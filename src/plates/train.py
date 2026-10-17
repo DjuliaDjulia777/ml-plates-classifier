@@ -1,100 +1,147 @@
+"""Training script: python -m plates.train --config configs/config.yaml."""
+
 import argparse
+import json
 import os
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import yaml
-from torch.utils.data import DataLoader, Subset, random_split
+from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
 from plates.dataset import PlatesDataset
-from plates.model import get_model
+from plates.metrics import classification_metrics
+from plates.model import get_model, set_train_mode
 from plates.transforms import get_train_transform, get_val_transform
-from plates.utils import set_seed
+from plates.utils import load_config, set_seed
+
+POSITIVE_CLASS = 1  # Index of "dirty": the class we want to detect.
 
 
-def load_config(path: str) -> dict:
-    """Load YAML config."""
-    with open(path, "r") as f:
-        return yaml.safe_load(f)
+def split_indices(
+    total: int, val_split: float, seed: int
+) -> Tuple[List[int], List[int]]:
+    """Split sample indices into disjoint train and validation parts.
 
+    Args:
+        total: Number of samples.
+        val_split: Fraction of samples used for validation.
+        seed: Seed of the random generator.
 
-def build_dataloaders(cfg: dict):
-    """Build train and val dataloaders using the same split indices."""
-    total = len(PlatesDataset(cfg["data"]["train_dir"]))
-    val_size = int(cfg["data"]["val_split"] * total)
+    Returns:
+        Tuple (train_indices, val_indices).
+
+    Raises:
+        ValueError: If either part would be empty.
+    """
+    val_size = int(val_split * total)
     train_size = total - val_size
+    if val_size == 0 or train_size == 0:
+        raise ValueError(f"Cannot split {total} samples with val_split={val_split}")
+    generator = torch.Generator().manual_seed(seed)
+    permutation = torch.randperm(total, generator=generator).tolist()
+    return permutation[:train_size], permutation[train_size:]
 
-    generator = torch.Generator().manual_seed(cfg["training"]["seed"])
-    train_subset, val_subset = random_split(
-        range(total), [train_size, val_size], generator=generator
-    )
 
-    train_dataset = Subset(
-        PlatesDataset(cfg["data"]["train_dir"], transform=get_train_transform()),
-        train_subset.indices,
-    )
-    val_dataset = Subset(
-        PlatesDataset(cfg["data"]["train_dir"], transform=get_val_transform()),
-        val_subset.indices,
+def build_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader]:
+    """Build train and validation dataloaders from one shared split.
+
+    Args:
+        cfg: Parsed config.
+
+    Returns:
+        Tuple (train_loader, val_loader).
+    """
+    data_cfg, train_cfg = cfg["data"], cfg["training"]
+    size = data_cfg["image_size"]
+
+    train_full = PlatesDataset(data_cfg["train_dir"], get_train_transform(size))
+    val_full = PlatesDataset(data_cfg["train_dir"], get_val_transform(size))
+    train_idx, val_idx = split_indices(
+        len(train_full), data_cfg["val_split"], train_cfg["seed"]
     )
 
     train_loader = DataLoader(
-        train_dataset,
-        batch_size=cfg["training"]["batch_size"],
+        Subset(train_full, train_idx),
+        batch_size=train_cfg["batch_size"],
         shuffle=True,
-        num_workers=cfg["training"]["num_workers"],
+        num_workers=train_cfg["num_workers"],
     )
     val_loader = DataLoader(
-        val_dataset,
-        batch_size=cfg["training"]["batch_size"],
+        Subset(val_full, val_idx),
+        batch_size=train_cfg["batch_size"],
         shuffle=False,
-        num_workers=cfg["training"]["num_workers"],
+        num_workers=train_cfg["num_workers"],
     )
     return train_loader, val_loader
 
 
-def train_one_epoch(model, loader, criterion, optimizer, device):
-    """Run one training epoch and return loss and accuracy."""
-    model.train()
-    running_loss, running_correct = 0.0, 0
-    for inputs, labels in tqdm(loader, desc="Train", leave=False):
-        inputs, labels = inputs.to(device), labels.to(device)
-        optimizer.zero_grad()
-        outputs = model(inputs)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
+def run_epoch(
+    model: nn.Module,
+    loader: DataLoader,
+    criterion: nn.Module,
+    device: torch.device,
+    optimizer: Optional[optim.Optimizer] = None,
+    freeze_backbone: bool = False,
+) -> Dict[str, float]:
+    """Run one training epoch (if optimizer is given) or one validation pass.
 
-        _, preds = torch.max(outputs, 1)
-        running_loss += loss.item() * inputs.size(0)
-        running_correct += (preds == labels).sum().item()
+    Args:
+        model: Model to run.
+        loader: Dataloader with (inputs, labels) batches.
+        criterion: Loss function.
+        device: Device for computation.
+        optimizer: Optimizer. If None, the model is only evaluated.
+        freeze_backbone: Whether the backbone is frozen (affects BatchNorm).
 
-    n = len(loader.dataset)
-    return running_loss / n, running_correct / n
+    Returns:
+        Dictionary with loss, accuracy, precision, recall and f1.
+    """
+    training = optimizer is not None
+    if training:
+        set_train_mode(model, freeze_backbone)
+    else:
+        model.eval()
+
+    total_loss = 0.0
+    all_preds: List[int] = []
+    all_labels: List[int] = []
+    desc = "Train" if training else "Val"
+
+    with torch.set_grad_enabled(training):
+        for inputs, labels in tqdm(loader, desc=desc, leave=False):
+            inputs, labels = inputs.to(device), labels.to(device)
+            if optimizer is not None:
+                optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            if optimizer is not None:
+                loss.backward()
+                optimizer.step()
+
+            total_loss += loss.item() * inputs.size(0)
+            all_preds.extend(outputs.argmax(dim=1).cpu().tolist())
+            all_labels.extend(labels.cpu().tolist())
+
+    metrics = classification_metrics(all_preds, all_labels, POSITIVE_CLASS)
+    metrics["loss"] = total_loss / len(all_labels)
+    return metrics
 
 
-@torch.no_grad()
-def validate(model, loader, criterion, device):
-    """Run validation and return loss and accuracy."""
-    model.eval()
-    running_loss, running_correct = 0.0, 0
-    for inputs, labels in tqdm(loader, desc="Val", leave=False):
-        inputs, labels = inputs.to(device), labels.to(device)
-        outputs = model(inputs)
-        loss = criterion(outputs, labels)
+def main(config_path: str) -> Dict[str, Any]:
+    """Train the model and save the best checkpoint and its metrics.
 
-        _, preds = torch.max(outputs, 1)
-        running_loss += loss.item() * inputs.size(0)
-        running_correct += (preds == labels).sum().item()
+    The best epoch is selected by validation F1 for the "dirty" class.
 
-    n = len(loader.dataset)
-    return running_loss / n, running_correct / n
+    Args:
+        config_path: Path to the YAML config.
 
-
-def main(config_path: str) -> None:
-    """Train the model from the config."""
+    Returns:
+        Validation metrics of the best epoch.
+    """
     cfg = load_config(config_path)
     set_seed(cfg["training"]["seed"])
 
@@ -103,37 +150,59 @@ def main(config_path: str) -> None:
 
     train_loader, val_loader = build_dataloaders(cfg)
 
-    model = get_model(num_classes=cfg["model"]["num_classes"]).to(device)
+    freeze = cfg["model"]["freeze_backbone"]
+    model = get_model(
+        num_classes=cfg["model"]["num_classes"],
+        freeze_backbone=freeze,
+        pretrained=cfg["model"]["pretrained"],
+    ).to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(
-        filter(lambda p: p.requires_grad, model.parameters()),
+        [p for p in model.parameters() if p.requires_grad],
         lr=cfg["training"]["learning_rate"],
     )
 
-    best_val_acc = 0.0
-    os.makedirs(cfg["paths"]["models_dir"], exist_ok=True)
-    ckpt_path = os.path.join(cfg["paths"]["models_dir"], "best_model.pth")
+    models_dir = cfg["paths"]["models_dir"]
+    os.makedirs(models_dir, exist_ok=True)
+    ckpt_path = os.path.join(models_dir, "best_model.pth")
+    metrics_path = os.path.join(models_dir, "metrics.json")
 
-    for epoch in range(cfg["training"]["num_epochs"]):
-        train_loss, train_acc = train_one_epoch(
-            model, train_loader, criterion, optimizer, device
-        )
-        val_loss, val_acc = validate(model, val_loader, criterion, device)
+    num_epochs = cfg["training"]["num_epochs"]
+    best_f1 = -1.0
+    best_metrics: Dict[str, Any] = {}
+
+    for epoch in range(1, num_epochs + 1):
+        train_m = run_epoch(model, train_loader, criterion, device, optimizer, freeze)
+        val_m = run_epoch(model, val_loader, criterion, device)
 
         print(
-            f"Epoch {epoch + 1:02d}/{cfg['training']['num_epochs']} | "
-            f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} | "
-            f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}"
+            f"Epoch {epoch:02d}/{num_epochs} | "
+            f"train_loss={train_m['loss']:.4f} train_acc={train_m['accuracy']:.4f} | "
+            f"val_loss={val_m['loss']:.4f} val_acc={val_m['accuracy']:.4f} "
+            f"val_f1={val_m['f1']:.4f}"
         )
 
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
+        if val_m["f1"] > best_f1:
+            best_f1 = val_m["f1"]
+            best_metrics = {"epoch": epoch, **val_m}
             torch.save(model.state_dict(), ckpt_path)
-            print(f"  -> saved best model (val_acc={best_val_acc:.4f})")
+            print(f"  -> saved best model (val_f1={best_f1:.4f})")
+
+    report = {
+        "selection_metric": "val_f1",
+        "positive_class": PlatesDataset.CLASSES[POSITIVE_CLASS],
+        "best": best_metrics,
+        "trained_at": datetime.now(timezone.utc).isoformat(),
+        "config": cfg,
+    }
+    with open(metrics_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
+    print(f"Saved metrics to {metrics_path}")
+    return best_metrics
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Train the plates classifier.")
     parser.add_argument("--config", default="configs/config.yaml")
     args = parser.parse_args()
     main(args.config)

@@ -1,11 +1,22 @@
+"""Image transforms and augmentations."""
+
+from typing import List
+
 from torchvision import transforms
 
-IMAGENET_MEAN = [0.485, 0.456, 0.406]
-IMAGENET_STD = [0.229, 0.224, 0.225]
+IMAGENET_MEAN: List[float] = [0.485, 0.456, 0.406]
+IMAGENET_STD: List[float] = [0.229, 0.224, 0.225]
 
 
 def get_train_transform(image_size: int = 224) -> transforms.Compose:
-    """Return augmentation pipeline for the training set."""
+    """Return the augmentation pipeline for the training set.
+
+    Args:
+        image_size: Side of the output square image in pixels.
+
+    Returns:
+        Composed transform producing a normalized float tensor.
+    """
     return transforms.Compose(
         [
             transforms.Resize((image_size, image_size)),
@@ -19,7 +30,14 @@ def get_train_transform(image_size: int = 224) -> transforms.Compose:
 
 
 def get_val_transform(image_size: int = 224) -> transforms.Compose:
-    """Return transformation pipeline for validation and test."""
+    """Return the deterministic pipeline for validation and test.
+
+    Args:
+        image_size: Side of the output square image in pixels.
+
+    Returns:
+        Composed transform producing a normalized float tensor.
+    """
     return transforms.Compose(
         [
             transforms.Resize((image_size, image_size)),
